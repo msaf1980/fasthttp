@@ -1347,7 +1347,7 @@ func (c *HostClient) do(req *Request, resp *Response) (bool, error) {
 	return ok, err
 }
 
-func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error) {
+func (c *HostClient) prepare(req *Request, resp *Response) (*clientConn, bool, bool, error) {
 	if req == nil {
 		panic("BUG: req cannot be nil")
 	}
@@ -1362,7 +1362,7 @@ func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error)
 	req.Header.secureErrorLogMessage = c.SecureErrorLogMessage
 
 	if c.IsTLS != bytes.Equal(req.uri.Scheme(), strHTTPS) {
-		return false, ErrHostClientRedirectToDifferentScheme
+		return nil, false, false, ErrHostClientRedirectToDifferentScheme
 	}
 
 	atomic.StoreUint32(&c.lastUseTime, uint32(time.Now().Unix()-startTimeUnix))
@@ -1384,12 +1384,12 @@ func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error)
 
 	if c.Transport != nil {
 		err := c.Transport(req, resp)
-		return err == nil, err
+		return nil, false, false, err
 	}
 
 	cc, err := c.acquireConn(req.timeout, req.ConnectionClose())
 	if err != nil {
-		return false, err
+		return nil, false, false, err
 	}
 	conn := cc.c
 
@@ -1401,7 +1401,7 @@ func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error)
 		currentTime := time.Now()
 		if err = conn.SetWriteDeadline(currentTime.Add(c.WriteTimeout)); err != nil {
 			c.closeConn(cc)
-			return true, err
+			return nil, false, false, err
 		}
 	}
 
@@ -1410,6 +1410,18 @@ func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error)
 		req.SetConnectionClose()
 		resetConnection = true
 	}
+
+	return cc, customSkipBody, resetConnection, nil
+}
+
+func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error) {
+	cc, customSkipBody, resetConnection, err := c.prepare(req, resp)
+	if err != nil {
+		return false, err
+	} else if c.Transport != nil {
+		return true, nil
+	}
+	conn := cc.c
 
 	bw := c.acquireWriter(conn)
 	err = req.Write(bw)
